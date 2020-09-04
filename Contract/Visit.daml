@@ -1,0 +1,75 @@
+module Contract.Visit where
+
+import DA.Next.Set as S
+
+-- Provider initiates patient's admittal to hospital, awaiting patient confirmation
+template InitiateVisit with
+    visit: Visit
+  where
+    signatory visit.provider
+    observer visit.patient
+
+    choice BeAdmitted: ContractId Visit with
+      controller visit.patient
+      do
+        create visit
+
+    choice RefuseMedicalCare: () with
+      controller visit.patient
+      do
+        return ()
+
+template Visit with
+    patient: Party
+    provider: Party
+    ailments: Set Text
+    cost: Int
+  where
+    ensure cost > 0 && not (S.null ailments)
+    signatory patient, provider
+    observer patient
+
+    key patient: Party
+    maintainer key
+
+    nonconsuming choice GetCost: Int with
+      controller patient, provider
+      do
+        return cost
+    
+    choice EndVisit: () with
+      controller provider
+      do
+        return ()
+
+-- Current provider initiates transfer, awaiting confirmation from new provider
+template InitiateTransfer with
+    confirmTransfer: ConfirmTransfer
+  where
+    signatory confirmTransfer.visit.provider
+    observer confirmTransfer.newProvider
+
+    choice AcceptTransfer: ContractId ConfirmTransfer with
+      controller confirmTransfer.newProvider
+      do
+        create confirmTransfer
+
+    choice RejectTransfer: () with
+      controller confirmTransfer.newProvider
+      do
+        return ()
+
+-- New provider confirms transfer, awaiting confirmation from patient
+template ConfirmTransfer with
+    newProvider: Party
+    visit: Visit
+  where
+    signatory visit.provider, newProvider
+    observer visit.patient
+
+    choice CompleteTransfer: ContractId Visit with
+      controller visit.patient
+      do
+        let newVisit = visit with provider = newProvider
+        exerciseByKey @Visit visit.patient EndVisit
+        create newVisit

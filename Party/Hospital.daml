@@ -1,0 +1,61 @@
+module Party.Hospital where
+
+import DA.Next.Set as S
+
+import Contract.Visit as Visit
+import Contract.Claim as Claim
+import Contract.Treatment as Treatment
+
+template Hospital with
+    institution: Party
+    revenue: Int
+    expenses: Int
+  where
+    signatory institution
+
+    key institution: Party
+    maintainer key
+
+    nonconsuming choice Admit: ContractId InitiateVisit with
+        patient: Party
+        ailments: Set Text
+        cost: Int
+      controller institution
+      do
+        create InitiateVisit with
+            visit = Visit with
+                patient; provider = institution; ailments; cost
+
+    nonconsuming choice Transfer: ContractId InitiateTransfer with
+        visitId: ContractId Visit
+        newProvider: Party
+      controller institution
+      do
+        visit <- fetch visitId
+        create InitiateTransfer with
+            confirmTransfer = ConfirmTransfer with
+                newProvider; visit
+
+    nonconsuming choice TreatPatient: (ContractId Hospital, ContractId ProvideCare) with
+        visitId: ContractId Visit
+        careProvided: Set Text
+      controller institution
+      do
+        visit <- fetch visitId
+        providedCare <- create ProvideCare with
+            treatment = Treatment with
+                provider = institution; patient = visit.patient; recoveredFrom = careProvided
+        archive self
+        newHospital <- create this with expenses = visit.cost + expenses
+        return (newHospital, providedCare)
+    
+    nonconsuming choice Release: ContractId Hospital with
+        visitId: ContractId Visit
+        claimAgreementId: ContractId ClaimAgreement
+      controller institution
+      do
+        claimAgreement <- fetch claimAgreementId
+        let payment = claimAgreement.amount
+        exercise visitId EndVisit
+        archive self
+        create this with revenue = payment + revenue

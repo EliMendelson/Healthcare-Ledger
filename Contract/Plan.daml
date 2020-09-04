@@ -1,0 +1,68 @@
+module Contract.Plan where
+
+-- Potential beneficiary initiates negotiation with a potential insurer
+template PlanProposal with
+    planAgreement: PlanAgreement
+  where
+    signatory planAgreement.insured
+    observer planAgreement.insurer
+
+    -- Insurer accepts the terms of the insurance plan with the now-beneficiary
+    choice AcceptPlanProposal: ContractId PlanAgreement with
+      controller planAgreement.insurer
+      do
+        create planAgreement
+    
+    choice RejectPlanProposal: () with
+      controller planAgreement.insurer
+      do
+        return ()
+
+-- Model of the insurance plan
+template PlanAgreement with
+    insured: Party
+    insurer: Party
+    policy: Int
+    deduction: Int
+  where
+    ensure policy > 0 && policy < 100
+    signatory insured, insurer
+
+    key insured: Party
+    maintainer key
+    
+    choice VoidAgreement: () with
+      controller insured
+      do
+        return ()
+
+type DeductionKey = (Party, Party)
+
+-- Pay (monthly) deduction from plan
+template RequestDeduction with
+    planDeduction: PlanDeduction
+  where
+    signatory planDeduction.insurer
+    observer planDeduction.insured
+
+    key (planDeduction.insured, planDeduction.insurer): DeductionKey
+    maintainer key._2
+
+    choice ConfirmDeduction: ContractId PlanDeduction with
+      controller planDeduction.insured
+      do
+        create planDeduction
+
+-- Model of the (monthly) deduction paid by the beneficiary
+template PlanDeduction with
+    insured: Party
+    insurer: Party
+    deduction: Int
+  where
+    signatory insurer
+    observer insured
+
+    choice PayDeduction: Int with
+      controller insured
+      do
+        return deduction

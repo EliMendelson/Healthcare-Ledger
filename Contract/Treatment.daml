@@ -1,0 +1,38 @@
+module Contract.Treatment where
+
+import DA.Next.Set as S
+
+-- Model of the treatment that the hospital offers the patient
+template ProvideCare with
+    treatment: Treatment
+  where
+    signatory treatment.provider
+    observer treatment.patient
+
+    choice AcceptCare: ContractId Treatment with
+      controller treatment.patient
+      do
+        create treatment
+
+    choice RejectCare: () with
+      controller treatment.patient
+      do
+        return ()
+
+type TreatmentKey = (Party, Party)
+
+-- Agreement of the treatment received by the patient
+template Treatment with
+    provider: Party
+    patient: Party
+    recoveredFrom: Set Text
+  where
+    signatory provider, patient
+
+    key (provider, patient): TreatmentKey
+    maintainer key._2
+
+    choice GetTreatment: Set Text
+      controller patient
+      do
+        return recoveredFrom

@@ -1,0 +1,89 @@
+module Contract.Claim where
+
+-- Patient initiates claim process
+type InitiateClaimKey = (Party, Party)
+
+template InitiateClaim with
+    claimProposal: ClaimProposal
+  where
+    signatory claimProposal.claimAgreement.patient
+    observer claimProposal.claimAgreement.provider
+
+    key (claimProposal.claimAgreement.patient, claimProposal.claimAgreement.provider): InitiateClaimKey
+    maintainer key._1
+
+    -- Hospital agrees to claim, passing along to insurer
+    choice AcceptInitiateClaim: ContractId ClaimProposal with
+      controller claimProposal.claimAgreement.provider
+      do
+        create claimProposal
+    
+    choice RejectInitiateClaim: () with
+      controller claimProposal.claimAgreement.provider
+      do
+        return ()
+ 
+template ClaimProposal with
+    claimAgreement: ClaimAgreement
+  where
+    signatory claimAgreement.provider
+    observer claimAgreement.coverage
+
+    -- Insurance provider agrees to claim, completing claim
+    choice AcceptClaimProposal: ContractId ClaimAgreement with
+      controller claimAgreement.coverage
+      do
+        create claimAgreement
+    
+    choice RejectClaimProposal: () with
+      controller claimAgreement.coverage
+      do
+        return ()
+
+type ClaimAgreementType = (Party, Party)
+
+template ClaimAgreement with
+    provider: Party
+    coverage: Party
+    patient: Party
+    amount: Int
+  where
+    ensure amount > 0
+    signatory coverage, provider
+    observer patient
+
+    key (patient, provider): ClaimAgreementType
+    maintainer key._2
+
+    choice SettleClaim: () with
+      controller patient
+      do
+        return ()
+
+-- Agreement to the size of reimbursement from insurance
+template VisitCoverage with
+    insurer: Party
+    patient: Party
+    reimbursement: Int
+  where
+    signatory insurer
+    observer patient
+
+    choice GetCoverage: Int with
+      controller patient
+      do
+        return reimbursement
+
+-- Agreement to the amount owed by the patient for the visit
+template Copayment with
+    insurer: Party
+    patient: Party
+    copay: Int
+  where
+    signatory insurer
+    observer patient
+
+    choice GetCopay: Int with
+      controller patient
+      do
+        return copay

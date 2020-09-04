@@ -1,0 +1,45 @@
+module Party.Insurer where
+
+import Contract.Plan as Plan
+import Contract.Claim as Claim
+
+template Insurer with
+    company: Party
+    revenue: Int
+    expenses: Int
+  where
+    signatory company
+
+    key company: Party
+    maintainer key
+
+    nonconsuming choice Reimburse: (ContractId Insurer, ContractId Copayment, ContractId VisitCoverage) with
+        claimProposal: ContractId ClaimProposal
+        planId: ContractId PlanAgreement
+      controller company
+      do
+        claimAgreementId <- exercise claimProposal AcceptClaimProposal
+        claimAgreement <- fetch claimAgreementId
+        plan <- fetch planId
+        let payout = (plan.policy * claimAgreement.amount) / 100
+        let copay = claimAgreement.amount - payout
+        let newExpenses = payout + expenses
+        visitCoverage <- create VisitCoverage with
+            insurer = company; patient = plan.insured; reimbursement = payout
+        copayment <- create Copayment with
+            insurer = company; patient = plan.insured; copay
+        archive self
+        newInsurer <- create this with
+            expenses = newExpenses; revenue = copay + revenue
+        return (newInsurer, copayment, visitCoverage)
+
+    nonconsuming choice PlanPayment: ContractId Insurer with
+        planId: ContractId PlanAgreement
+      controller company
+      do
+        plan <- fetch planId
+        create RequestDeduction with
+            planDeduction = PlanDeduction with
+                insured = plan.insured; insurer = company; deduction = plan.deduction
+        archive self
+        create this with revenue = plan.deduction + revenue

@@ -1,0 +1,104 @@
+module Party.Patient where
+
+import DA.Next.Set as S
+
+import Contract.Plan as Plan
+import Contract.Visit as Visit
+import Contract.Claim as Claim
+import Contract.Treatment as Treatment
+
+template Patient with
+    name: Party
+    ailments: Set Text
+    outstandingCharges: Int
+  where
+    signatory name
+
+    key name: Party
+    maintainer key
+
+    -- Get new insurance policy
+    nonconsuming choice RequestNewInsurer: ContractId PlanProposal with
+        newInsurer: Party
+        newPolicy: Int
+        newDeduction: Int
+      controller name
+      do
+        planKey <- lookupByKey @PlanAgreement name
+        _ <- case planKey of
+            Some plan   -> exercise plan VoidAgreement
+            None        -> return ()
+        create PlanProposal with
+            planAgreement = PlanAgreement with
+                insured = name; insurer = newInsurer; policy = newPolicy; deduction = newDeduction
+
+    -- Pay monthly deduction from plan
+    nonconsuming choice FulfillDeductionPayment: ContractId Patient with
+        requestDeduction: ContractId RequestDeduction
+      controller name
+      do
+        planDeduction <- exercise requestDeduction ConfirmDeduction
+        payment <- exercise planDeduction PayDeduction
+        archive self
+        create this with outstandingCharges = payment + outstandingCharges
+
+    -- Get the patient's current insurance plan
+    nonconsuming choice FindInsurancePlan: ContractId PlanAgreement with
+      controller name
+      do
+        planKey <- lookupByKey @PlanAgreement name
+        case planKey of
+            Some plan   -> return plan
+            None        -> abort "No plan available"
+
+    -- Send a payment (for money owed) to a hospital
+    nonconsuming choice MakePayment: ContractId Patient with
+        claimAgreementId: ContractId ClaimAgreement
+        visitCoverageId: ContractId VisitCoverage
+        copaymentId: ContractId Copayment
+      controller name
+      do
+        exercise claimAgreementId SettleClaim
+        reimbursement <- exercise visitCoverageId GetCoverage
+        copay <- exercise copaymentId GetCopay
+        archive self
+        create this with outstandingCharges = outstandingCharges + copay
+    
+    -- Be admitted to a hospital (start a visit)
+    nonconsuming choice VisitHospital: (ContractId Patient, ContractId Visit) with
+        initiateVisit: ContractId InitiateVisit
+      controller name
+      do
+        visitId <- exercise initiateVisit BeAdmitted
+        visit <- fetch visitId
+        let newAilments = S.union ailments visit.ailments
+        archive self
+        admittedPatient <- create this with ailments = newAilments
+        return (admittedPatient, visitId)
+
+    -- Get treated by a hospital
+    nonconsuming choice ReceiveMedicalCare: ContractId Patient with
+        treatmentId: ContractId Treatment
+      controller name
+      do
+        recoveredFrom <- exercise treatmentId GetTreatment
+        let remainingAilments = S.difference ailments recoveredFrom
+        archive self
+        create this with ailments = remainingAilments
+
+    -- Get released from a hospital (end a visit)
+    nonconsuming choice ReleaseFromHospital: (ContractId Patient, ContractId InitiateClaim) with
+        planId: ContractId PlanAgreement
+        visitId: ContractId Visit
+        treatmentId: ContractId Treatment
+      controller name
+      do
+        plan <- fetch planId
+        visit <- fetch visitId
+        treatment <- fetch treatmentId
+        initiateClaim <- create InitiateClaim with
+            claimProposal = ClaimProposal with
+                claimAgreement = ClaimAgreement with
+                    provider = visit.provider; coverage = plan.insurer; patient = name; amount = visit.cost
+        releasedPatient <- exercise self ReceiveMedicalCare with treatmentId
+        return (releasedPatient, initiateClaim)

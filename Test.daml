@@ -1,0 +1,183 @@
+module Test where
+
+import DA.Next.Set as S
+
+import Party.Patient as Patient
+import Party.Insurer as Insurer
+import Party.Hospital as Hospital
+
+import Contract.Visit as Visit
+import Contract.Plan as Plan
+import Contract.Claim as Claim
+import Contract.Treatment as Treatment
+
+data Environment = Environment with
+    patientA: Party
+    patientB: Party
+    hospitalA: Party
+    hospitalB: Party
+    insuranceA: Party
+    insuranceB: Party
+    policyA: Int
+    policyB: Int
+    deductionA: Int
+    deductionB: Int
+    ailments: Set Text
+
+env: Scenario Environment
+env =
+    do
+        patientA <- getParty "Alice"
+        patientB <- getParty "Bob"
+        hospitalA <- getParty "University Hospital"
+        hospitalB <- getParty "Doctor Associates"
+        insuranceA <- getParty "General Coverage Inc"
+        insuranceB <- getParty "US Veterans Assn"
+        let policyA = 75
+        let policyB = 90
+        let deductionA = 10
+        let deductionB = 15
+        let ailments = S.fromList [ "headache", "dizziness", "mood" ]
+        pure Environment with ..
+
+testAgreement = scenario do
+    Environment{..} <- env
+    testPatient <- submit patientA do
+        create Patient with name = patientA; ailments; outstandingCharges = 0
+    firstProposal <- submit patientA do
+        exercise testPatient RequestNewInsurer
+            with newInsurer = insuranceA; newPolicy = policyA; newDeduction = deductionA
+    submit insuranceA do
+        exercise firstProposal AcceptPlanProposal
+
+testRejection = scenario do
+    Environment{..} <- env
+    testPatient <- submit patientA do
+        create Patient with name = patientA; ailments; outstandingCharges = 0
+    firstProposal <- submit patientA do
+        exercise testPatient RequestNewInsurer
+            with newInsurer = insuranceA; newPolicy = policyA; newDeduction = deductionA
+    submit insuranceA do
+        exercise firstProposal RejectPlanProposal
+
+testFindAgreement = scenario do
+    Environment{..} <- env
+    testPatient <- submit patientA do
+        create Patient with name = patientA; ailments; outstandingCharges = 0
+    firstProposal <- submit patientA do
+        exercise testPatient RequestNewInsurer
+            with newInsurer = insuranceA; newPolicy = policyA; newDeduction = deductionA
+    firstAgreement <- submit insuranceA do
+        exercise firstProposal AcceptPlanProposal
+    submit patientA do
+        exercise testPatient FindInsurancePlan
+
+testSwitchInsurance = scenario do
+    Environment{..} <- env
+    testPatient <- submit patientA do
+        create Patient with name = patientA; ailments; outstandingCharges = 0
+    firstProposal <- submit patientA do
+        exercise testPatient RequestNewInsurer
+            with newInsurer = insuranceA; newPolicy = policyA; newDeduction = deductionA
+    firstAgreement <- submit insuranceA do
+        exercise firstProposal AcceptPlanProposal
+    secondProposal <- submit patientA do
+        exercise testPatient RequestNewInsurer
+            with newInsurer = insuranceB; newPolicy = policyB; newDeduction = deductionB
+    firstRejection <- submit insuranceB do
+        exercise secondProposal RejectPlanProposal
+    submitMustFail insuranceB do
+        exercise secondProposal AcceptPlanProposal
+    thirdProposal <- submit patientA do
+        exercise testPatient RequestNewInsurer
+            with newInsurer = insuranceB; newPolicy = policyB; newDeduction = deductionB
+    submit insuranceB do
+        exercise thirdProposal AcceptPlanProposal
+
+testHospitalVisit = scenario do
+    -- Set up test environment
+    Environment{..} <- env
+    testPatient <- submit patientA do
+        create Patient with name = patientA; ailments; outstandingCharges = 0
+    testInsurance <- submit insuranceA do
+        create Insurer with company = insuranceA; revenue = 0; expenses = 0
+    testHospital <- submit hospitalA do
+        create Hospital with institution = hospitalA; revenue = 0; expenses = 0
+    testProposal <- submit patientA do
+        exercise testPatient RequestNewInsurer
+            with newInsurer = insuranceA; newPolicy = policyA; newDeduction = deductionA
+    testAgreement <- submit insuranceA do
+        exercise testProposal AcceptPlanProposal
+    -- Simulate insurance interaction
+    testInsurance <- submit insuranceA do
+        exercise testInsurance PlanPayment with planId = testAgreement
+    deductionIdOpt <- submit insuranceA do
+        lookupByKey @RequestDeduction (patientA, insuranceA)
+    requestDeduction <- case deductionIdOpt of
+        Some requestDeductionId   ->
+            submit patientA do
+                return requestDeductionId
+        None                    -> abort "No deduction found in Alice's plan"
+    testPatient <- submit patientA do
+        exercise testPatient FulfillDeductionPayment with requestDeduction
+    -- Begin hospital visit
+    initiateVisit <- submit hospitalA do
+        exercise testHospital Admit with patient = patientA; ailments; cost = 100
+    (testPatient, visitId) <- submit patientA do
+        exercise testPatient VisitHospital with initiateVisit
+    (testHospital, careProvided) <- submit hospitalA do
+        exercise testHospital TreatPatient with visitId; careProvided = S.singleton "mood"
+    treatmentId <- submit patientA do
+        exercise careProvided AcceptCare
+    -- Conclude hospital visit
+    (testPatient, initiateClaimId) <- submit patientA do
+        exercise testPatient ReleaseFromHospital with planId = testAgreement; visitId; treatmentId
+    claimProposal <- submit hospitalA do
+        exercise initiateClaimId AcceptInitiateClaim
+    (testInsurance, copaymentId, visitCoverageId) <- submit insuranceA do
+        exercise testInsurance Reimburse with claimProposal; planId = testAgreement
+    claimAgreementOpt <- submit hospitalA do
+        lookupByKey @ClaimAgreement (patientA, hospitalA)
+    claimAgreementId <- case claimAgreementOpt of
+        Some claimAgreement  ->
+            submit patientA do
+                return claimAgreement
+        None        -> abort "No ClaimAgreement found for Alice"
+    testHospital <- submit hospitalA do
+        exercise testHospital Release with visitId; claimAgreementId
+    submit patientA do
+        exercise testPatient MakePayment with claimAgreementId; visitCoverageId; copaymentId
+
+testHospitalTransfer = scenario do
+    -- Set up test environment
+    Environment{..} <- env
+    testPatient <- submit patientA do
+        create Patient with name = patientA; ailments; outstandingCharges = 0
+    testInsurance <- submit insuranceA do
+        create Insurer with company = insuranceA; revenue = 0; expenses = 0
+    testHospitalA <- submit hospitalA do
+        create Hospital with institution = hospitalA; revenue = 0; expenses = 0
+    testHospitalB <- submit hospitalB do
+        create Hospital with institution = hospitalB; revenue = 0; expenses = 0
+    -- Begin hospital visit
+    initiateVisit <- submit hospitalA do
+        exercise testHospitalA Admit with patient = patientA; ailments; cost = 100
+    (testPatient, visitId) <- submit patientA do
+        exercise testPatient VisitHospital with initiateVisit
+    (testHospitalA, careProvided) <- submit hospitalA do
+        exercise testHospitalA TreatPatient with visitId; careProvided = S.singleton "headache"
+    treatmentId <- submit patientA do
+        exercise careProvided AcceptCare
+    visit <- submit hospitalA do
+        fetch visitId
+    initiateTransfer <- submit hospitalA do
+        create InitiateTransfer with
+            confirmTransfer = ConfirmTransfer with
+                newProvider = hospitalB; visit
+    confirmTransfer <- submit hospitalB do
+        exercise initiateTransfer AcceptTransfer
+    visitId <- submit patientA do
+        exercise confirmTransfer CompleteTransfer
+    submit patientA do
+        exercise testPatient ReceiveMedicalCare with treatmentId
+    return ()
